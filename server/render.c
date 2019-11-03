@@ -63,13 +63,14 @@ int server_msg_expire = 0;
 
 
 static void render_frame(LinkedList *list, int left, int top, int right, int bottom, int fwid, int fhgt, char fscroll, int fspeed, long timer);
-static void render_string(Widget *w, int left, int top, int right, int bottom, int fy);
+static void render_string(Widget *w, int left, int top, int right, int bottom, int fx, int fy);
 static void render_hbar(Widget *w, int left, int top, int right, int bottom, int fy);
 static void render_vbar(Widget *w, int left, int top, int right, int bottom);
 static void render_pbar(Widget *w, int left, int top, int right, int bottom);
 static void render_title(Widget *w, int left, int top, int right, int bottom, long timer);
 static void render_scroller(Widget *w, int left, int top, int right, int bottom, long timer);
 static void render_num(Widget *w, int left, int top, int right, int bottom);
+static int calc_scrolling(int speed, int timer, int bounce, int space);
 
 
 /**
@@ -210,35 +211,45 @@ render_frame(LinkedList *list,
 		int fspeed,	/* speed of scrolling... */
 		long timer)	/* current timer tick */
 {
-	int fy = 0;		/* Scrolling offset for the frame... */
+    int fx;
+    int fy;
 
 	debug(RPT_DEBUG, "%s(list=%p, left=%d, top=%d, "
-			  "right=%d, bottom=%d, fwid=%d, fhgt=%d, "
+			  "right=%d, bottom=%d, fwid=%d, fhgt=%d, fx=%d, fy=%d, "
 			  "fscroll='%c', fspeed=%d, timer=%ld)",
 			  __FUNCTION__, list, left, top, right, bottom,
-			  fwid, fhgt, fscroll, fspeed, timer);
+			  fwid, fhgt,fx,fy, fscroll, fspeed, timer);
 
 	/* return on no data or illegal height */
 	if ((list == NULL) || (fhgt <= 0))
 		return;
 
 	if (fscroll == 'v') {		/* vertical scrolling */
-		// only set offset !=0 when fspeed is != 0 and there is something to scroll
-		if ((fspeed != 0) && (fhgt > bottom - top)) {
+		// only set offset when there is something to scroll
+		if (fhgt > (bottom - top)) {
 			int fy_max = fhgt - (bottom - top) + 1;
-
+			fy += calc_scrolling(fspeed, timer, 1, fy_max);
+#if 0
 			fy = (fspeed > 0)
 			     ? (timer / fspeed) % fy_max
 			     : (-fspeed * timer) % fy_max;
 
 			fy = max(fy, 0);	// safeguard against negative values
-
+#endif
 			debug(RPT_DEBUG, "%s: fy=%d", __FUNCTION__, fy);
+			top -= fy;
 		}
 	}
 	else if (fscroll == 'h') {	/* horizontal scrolling */
-		/* TODO:  Frames don't scroll horizontally yet! */
+	    // only set offset when there is something to scroll
+        if (fwid > (right - left)) {
+            int fx_max = fwid - (right - left) + 1;
+            fx += calc_scrolling(fspeed, timer, 1, fx_max);
+            debug(RPT_DEBUG, "%s: fx=%d", __FUNCTION__, fx);
+            left -= fx;
+        }
 	}
+
 
 	/* reset widget list */
 	LL_Rewind(list);
@@ -253,16 +264,16 @@ render_frame(LinkedList *list,
 		/* TODO:  Make this cleaner and more flexible! */
 		switch (w->type) {
 		case WID_STRING:
-			render_string(w, left, top - fy, right, bottom, fy);
+			render_string(w, left, top, right, bottom, 0,0);
 			break;
 		case WID_HBAR:
-			render_hbar(w, left, top - fy, right, bottom, fy);
+			render_hbar(w, left, top, right, bottom, 0);
 			break;
 		case WID_VBAR:	  /* FIXME:  Vbars don't work in frames! */
 			render_vbar(w, left, top, right, bottom);
 			break;
 		case WID_PBAR:
-			render_pbar(w, left, top - fy, right, bottom);
+			render_pbar(w, left, top, right, bottom);
 			break;
 		case WID_ICON:	  /* FIXME:  Icons don't work in frames! */
 			drivers_icon(w->x, w->y, w->length);
@@ -280,13 +291,24 @@ render_frame(LinkedList *list,
 				 */
 				int new_left = left + w->left - 1;
 				int new_top = top + w->top - 1;
-				int new_right = min(left + w->right, right);
-				int new_bottom = min(top + w->bottom, bottom);
+				int new_right = left + w->right;
+				int new_bottom = top + w->bottom;
 
-				if ((new_left < right) && (new_top < bottom))	/* Render only if it's visible... */
+
+				if (new_left < right && new_right >= 0 &&
+				        new_bottom >= 0 && new_top < bottom)
+				{
 					render_frame(w->frame_screen->widgetlist, new_left, new_top,
 							new_right, new_bottom, w->width, w->height,
 							w->length, w->speed, timer);
+				}
+				else {
+	                debug(RPT_DEBUG, "%s(list=%p, left=%d, top=%d, "
+	                          "right=%d, bottom=%d, fwid=%d, fhgt=%d, fx=%d, fy=%d, "
+	                          "fscroll='%c', fspeed=%d, timer=%ld)",
+	                          "drop_frame", list, new_left, new_top, new_right, new_bottom,
+	                          w->width, w->height,fx,fy, w->length, w->speed, timer);
+				}
 			}
 			break;
 		case WID_NUM:	  /* FIXME: doesn't work in frames... */
@@ -303,23 +325,75 @@ render_frame(LinkedList *list,
 	} while (LL_Next(list) == 0);
 }
 
+/**
+ *  w->x,  Widget local offset
+ *  w->y,
+ *
+ *  left,  reference point
+ *  top,
+ *
+ *  visible{left, top, right, bottom}   Visible window
+ */
+
+
+/**
+ * Calculate the scrolling position
+ *
+ */
+static int
+calc_scrolling(int speed, int timer, int bounce, int space)
+{
+    int offset;     // Where in the scrolling cycle we are up to
+    int increments;
+    int directions;
+    if(bounce) {
+        directions = 2;
+    }
+    else {
+        directions = 1;
+    }
+    if (speed > 0) {
+        increments = space * speed;
+        if (((timer / increments) % directions) == 0) {
+            /* wiggle one way */
+            offset = (timer % increments)  / speed;
+        }
+        else {
+            /* wiggle the other */
+            offset = (((timer % increments) - increments + 1) / speed) * -1;
+        }
+    }
+    else if (speed < 0) {
+        increments = space / (speed * -1);
+        if (((timer / increments) % directions) == 0) {
+            offset = (timer % increments) * speed * -1;
+        }
+        else {
+            offset = (((timer % increments) * speed * -1) - space + 1) * -1;
+        }
+    }
+    else {
+        offset = 0;
+    }
+    return offset;
+}
+
 
 static void
-render_string(Widget *w, int left, int top, int right, int bottom, int fy)
+render_string(Widget *w, int left, int top, int right, int bottom, int fx, int fy)
 {
-	debug(RPT_DEBUG, "%s(w=%p, left=%d, top=%d, right=%d, bottom=%d, fy=%d)",
-			  __FUNCTION__, w, left, top, right, bottom, fy);
+	debug(RPT_DEBUG, "%s(w=%p, left=%d, top=%d, right=%d, bottom=%d, fx=%d, fy=%d)",
+			  __FUNCTION__, w, left, top, right, bottom, fx, fy);
+	int length;
+	if (w->text != NULL) {
+	    length = strlen(w->text);
 
-	if ((w->text != NULL) &&
-	    (w->x > 0) && (w->y > 0) && (w->y > fy) && (w->y <= bottom - top)) {
-		/*
-		 * FIXME: Could be a bug here? w->x is recalculated (On first
-		 * call only? Is it preserved between calls?) and first
-		 * character of w->text shows up on the rightmost column for
-		 * strings totally off-screen. Is this on purpose? (M. Dolze)
-		 */
-		w->x = min(w->x, right - left);
-		drivers_string(w->x + left, w->y + top, w->text);
+	    if(fx > length) {
+	        fx = length;
+	    }
+	    if((w->y + fy >= top) && (w->y + fy <= bottom)){
+	        drivers_string(w->x + left, w->y + top, w->text + fx);
+	    }
 	}
 }
 
@@ -503,6 +577,8 @@ render_scroller(Widget *w, int left, int top, int right, int bottom, long timer)
 		gap = screen_width / 2;
 		length += gap; /* Allow gap between end and beginning */
 
+		offset = calc_scrolling(w->speed, timer, 0, length);
+#if 0
 		if (w->speed > 0) {
 			necessaryTimeUnits = length * w->speed;
 			offset = (timer % necessaryTimeUnits) / w->speed;
@@ -514,6 +590,7 @@ render_scroller(Widget *w, int left, int top, int right, int bottom, long timer)
 		else {
 			offset = 0;
 		}
+#endif
 		if (offset <= length) {
 			if (gap > offset) {
 				memset(str, ' ', gap - offset);
@@ -542,7 +619,8 @@ render_scroller(Widget *w, int left, int top, int right, int bottom, long timer)
 		}
 		else {
 			int effLength = length - screen_width;
-
+			offset = calc_scrolling(w->speed, timer, 1, effLength);
+#if 0
 			if (w->speed > 0) {
 				necessaryTimeUnits = effLength * w->speed;
 				if (((timer / necessaryTimeUnits) % 2) == 0) {
@@ -572,6 +650,7 @@ render_scroller(Widget *w, int left, int top, int right, int bottom, long timer)
 			else {
 				offset = 0;
 			}
+#endif
 			if (offset <= length) {
 				strncpy(str, &((w->text)[offset]), screen_width);
 				str[screen_width] = '\0';
@@ -611,6 +690,8 @@ render_scroller(Widget *w, int left, int top, int right, int bottom, long timer)
 				int i = 0;
 
 				/*debug(RPT_DEBUG, "length: %d sw: %d lines req: %d  avail lines: %d  effLines: %d ",length,screen_width,lines_required,available_lines,effLines);*/
+				begin = calc_scrolling(w->speed, timer, 1, effLines);
+#if 0
 				if (w->speed > 0) {
 					necessaryTimeUnits = effLines * w->speed;
 					if (((timer / necessaryTimeUnits) % 2) == 0) {
@@ -640,6 +721,7 @@ render_scroller(Widget *w, int left, int top, int right, int bottom, long timer)
 				else {
 					begin = 0;
 				}
+#endif
 				/*debug(RPT_DEBUG, "rendering begin: %d  timer: %d effLines: %d",begin,timer,effLines); */
 				for (i = begin; i < begin + available_lines; i++) {
 					strncpy(str, &((w->text)[i * (screen_width)]), screen_width);
