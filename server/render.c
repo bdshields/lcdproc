@@ -159,9 +159,9 @@ render_screen(Screen *s, long timer)
 	drivers_output(output_state);
 
 	/* 4. Draw a frame... */
-	render_frame(s->widgetlist, _LOC(0, 0 ,s->width+2, s->height),
+	render_frame(s->widgetlist, _LOC(0, 0 ,s->width, s->height),
 			_BOX(0,0,display_props->width, display_props->height),
-			'h', max(s->duration / s->height, 1), timer);
+			'v', max(s->duration / s->height, 1), timer);
 
 	/* 5. Set the cursor */
 	drivers_cursor(s->cursor_x, s->cursor_y, s->cursor);
