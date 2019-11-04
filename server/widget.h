@@ -31,6 +31,29 @@ typedef enum WidgetType {
 	WID_NUM
 } WidgetType;
 
+typedef struct Box {
+	int left;
+	int top;
+	int right;
+	int bottom;
+} Box;
+
+#define _BOX(_l, _t, _r, _b) (Box){.left=_l, .top=_t,  .right=_r, .bottom=_b}
+
+typedef struct Coord {
+	int x;
+	int y;
+}Coord;
+
+#define _COORD(_x, _y) (Coord){.x=_x, .y=_y}
+#define C_ZERO (Coord){.x=0, .y=0}
+
+typedef struct Dimention {
+	int width;
+	int height;
+}Dimension;
+
+#define _DIM(_w, _h) (Dimension){.width = _w, .height=_h}
 
 /** Widget structure */
 typedef struct Widget {

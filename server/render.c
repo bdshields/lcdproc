@@ -61,9 +61,12 @@ int output_state = 0;
 char *server_msg_text;
 int server_msg_expire = 0;
 
-
+#if 1
+static void render_frame(LinkedList *list, Coord origin, Dimension dim, Box vis, char fscroll, int fspeed, long timer);
+#else
 static void render_frame(LinkedList *list, int left, int top, int right, int bottom, int fwid, int fhgt, char fscroll, int fspeed, long timer);
-static void render_string(Widget *w, int left, int top, int right, int bottom, int fx, int fy);
+#endif
+static void render_string(Widget *w, Coord origin, Dimension dim, Box vis);
 static void render_hbar(Widget *w, int left, int top, int right, int bottom, int fy);
 static void render_vbar(Widget *w, int left, int top, int right, int bottom);
 static void render_pbar(Widget *w, int left, int top, int right, int bottom);
@@ -71,7 +74,7 @@ static void render_title(Widget *w, int left, int top, int right, int bottom, lo
 static void render_scroller(Widget *w, int left, int top, int right, int bottom, long timer);
 static void render_num(Widget *w, int left, int top, int right, int bottom);
 static int calc_scrolling(int speed, int timer, int bounce, int space);
-
+static Box calc_intersection(Box first, Box second);
 
 /**
  * Renders a screen. The following actions are taken in order:
@@ -156,9 +159,9 @@ render_screen(Screen *s, long timer)
 	drivers_output(output_state);
 
 	/* 4. Draw a frame... */
-	render_frame(s->widgetlist, 0, 0,
-			display_props->width, display_props->height,
-			s->width, s->height, 'v', max(s->duration / s->height, 1), timer);
+	render_frame(s->widgetlist, C_ZERO, _DIM(s->width, s->height),
+			_BOX(0,0,display_props->width, display_props->height),
+			'v', max(s->duration / s->height, 1), timer);
 
 	/* 5. Set the cursor */
 	drivers_cursor(s->cursor_x, s->cursor_y, s->cursor);
@@ -201,12 +204,17 @@ render_screen(Screen *s, long timer)
 /* */
 static void
 render_frame(LinkedList *list,
+		Coord origin,
+		Dimension dim,
+		Box vis,
+#if 0
 		int left,	/* left edge of frame */
 		int top,	/* top edge of frame */
 		int right,	/* right edge of frame */
 		int bottom,	/* bottom edge of frame */
 		int fwid,	/* frame width? */
 		int fhgt,	/* frame height? */
+#endif
 		char fscroll,	/* direction of scrolling */
 		int fspeed,	/* speed of scrolling... */
 		long timer)	/* current timer tick */
@@ -214,21 +222,22 @@ render_frame(LinkedList *list,
     int fx;
     int fy;
 
-	debug(RPT_DEBUG, "%s(list=%p, left=%d, top=%d, "
-			  "right=%d, bottom=%d, fwid=%d, fhgt=%d, fx=%d, fy=%d, "
+	debug(RPT_DEBUG, "%s(list=%p, x=%d, y=%d, width=%d, height=%d "
+			  "left=%d, top=%d, right=%d, bottom=%d, "
 			  "fscroll='%c', fspeed=%d, timer=%ld)",
-			  __FUNCTION__, list, left, top, right, bottom,
-			  fwid, fhgt,fx,fy, fscroll, fspeed, timer);
+			  __FUNCTION__, list, origin.x, origin.y, dim.width, dim.height,
+			  vis.left, vis.top, vis.right, vis.bottom,
+			  fscroll, fspeed, timer);
 
 	/* return on no data or illegal height */
-	if ((list == NULL) || (fhgt <= 0))
+	if ((list == NULL) || (dim.height <= 0) || (dim.width <= 0))
 		return;
 
 	if (fscroll == 'v') {		/* vertical scrolling */
 		// only set offset when there is something to scroll
-		if (fhgt > (bottom - top)) {
-			int fy_max = fhgt - (bottom - top) + 1;
-			fy += calc_scrolling(fspeed, timer, 1, fy_max);
+		if (dim.height > (vis.bottom - vis.top)) {
+			int fy_max = dim.height - (vis.bottom - vis.top) + 1;
+			fy = calc_scrolling(fspeed, timer, 1, fy_max);
 #if 0
 			fy = (fspeed > 0)
 			     ? (timer / fspeed) % fy_max
@@ -237,17 +246,17 @@ render_frame(LinkedList *list,
 			fy = max(fy, 0);	// safeguard against negative values
 #endif
 			debug(RPT_DEBUG, "%s: fy=%d", __FUNCTION__, fy);
-			top -= fy;
+			origin.y -= fy;
 		}
 	}
 	else if (fscroll == 'h') {	/* horizontal scrolling */
-	    // only set offset when there is something to scroll
-        if (fwid > (right - left)) {
-            int fx_max = fwid - (right - left) + 1;
-            fx += calc_scrolling(fspeed, timer, 1, fx_max);
-            debug(RPT_DEBUG, "%s: fx=%d", __FUNCTION__, fx);
-            left -= fx;
-        }
+		// only set offset when there is something to scroll
+		if (dim.width > (vis.right - vis.left)) {
+			int fx_max = dim.width - (vis.right - vis.left) + 1;
+			fx = calc_scrolling(fspeed, timer, 1, fx_max);
+			debug(RPT_DEBUG, "%s: fx=%d", __FUNCTION__, fx);
+			origin.x -= fx;
+		}
 	}
 
 
@@ -264,8 +273,9 @@ render_frame(LinkedList *list,
 		/* TODO:  Make this cleaner and more flexible! */
 		switch (w->type) {
 		case WID_STRING:
-			render_string(w, left, top, right, bottom, 0,0);
+			render_string(w, origin, dim,vis);
 			break;
+#if 0
 		case WID_HBAR:
 			render_hbar(w, left, top, right, bottom, 0);
 			break;
@@ -284,39 +294,37 @@ render_frame(LinkedList *list,
 		case WID_SCROLLER: /* FIXME: doesn't work in frames... */
 			render_scroller(w, left, top, right, bottom, timer);
 			break;
+#endif
 		case WID_FRAME:
 			{
 				/* FIXME: doesn't handle nested frames quite right!
 				 * doesn't handle scrolling in nested frames at all...
 				 */
-				int new_left = left + w->left - 1;
-				int new_top = top + w->top - 1;
-				int new_right = left + w->right;
-				int new_bottom = top + w->bottom;
+				Box visible;
+				visible = calc_intersection(vis, _BOX(origin.x + w->left-1, origin.y + w->top-1, origin.x + w->right, origin.y + w->bottom));
 
-
-				if (new_left < right && new_right >= 0 &&
-				        new_bottom >= 0 && new_top < bottom)
-				{
-					render_frame(w->frame_screen->widgetlist, new_left, new_top,
-							new_right, new_bottom, w->width, w->height,
-							w->length, w->speed, timer);
+				if ((visible.left == 0) && (visible.right == 0)) {
+					debug(RPT_DEBUG, "%s(list=%p, x=%d, y=%d, width=%d, height=%d "
+							  "left=%d, top=%d, right=%d, bottom=%d, "
+							  "fscroll='%c', fspeed=%d, timer=%ld)",
+							  "drop_frame", list, origin.x, origin.y, w->width, w->height,
+							  w->left, w->top, w->right, w->bottom,
+							  w->length, w->speed, timer);
 				}
 				else {
-	                debug(RPT_DEBUG, "%s(list=%p, left=%d, top=%d, "
-	                          "right=%d, bottom=%d, fwid=%d, fhgt=%d, fx=%d, fy=%d, "
-	                          "fscroll='%c', fspeed=%d, timer=%ld)",
-	                          "drop_frame", list, new_left, new_top, new_right, new_bottom,
-	                          w->width, w->height,fx,fy, w->length, w->speed, timer);
+					render_frame(w->frame_screen->widgetlist, _COORD(origin.x+w->left - 1, origin.y + w->top -1), _DIM(w->width, w->height), visible,
+							w->length, w->speed, timer);
 				}
 			}
 			break;
+#if 0
 		case WID_NUM:	  /* FIXME: doesn't work in frames... */
 			/* NOTE: y=10 means COLON (:) */
 			if ((w->x > 0) && (w->y >= 0) && (w->y <= 10)) {
 				drivers_num(w->x + left, w->y);
 			}
 			break;
+#endif
 		case WID_NONE:
 			/* FALLTHROUGH */
 		default:
@@ -326,15 +334,59 @@ render_frame(LinkedList *list,
 }
 
 /**
- *  w->x,  Widget local offset
- *  w->y,
- *
- *  left,  reference point
- *  top,
- *
- *  visible{left, top, right, bottom}   Visible window
+ * Calculate the intersection of two boxes
  */
+static Box
+calc_intersection(Box first, Box second)
+{
+	Box intersect;
 
+
+	// Check if no overlap at all
+	if((first.right < second.left) || (first.bottom < second.top)
+			|| (first.left > second.right) || (first.top > second.bottom)) {
+		return (Box){0,0,0,0};
+	}
+
+	// Left Edge
+	if(first.left >= second.left) {
+		intersect.left = first.left;
+	}
+	else {
+		intersect.left = second.left;
+	}
+
+	// Right Edge
+	if(first.right < second.right) {
+		intersect.right = first.right;
+	}
+	else {
+		intersect.right = second.right;
+	}
+
+	// Top Edge
+	if(first.top < second.top) {
+		intersect.top = second.top;
+	}
+	else {
+		intersect.top = first.top;
+	}
+
+	// bottom Edge
+	if(first.bottom > second.bottom) {
+		intersect.bottom = second.bottom;
+	}
+	else {
+		intersect.bottom = first.bottom;
+	}
+	debug(RPT_DEBUG, "%s((left=%d, top=%d, right=%d, bottom=%d),(left=%d, top=%d, right=%d, bottom=%d),"
+								"(left=%d, top=%d, right=%d, bottom=%d))",
+								  __FUNCTION__,  first.left, first.top, first.right, first.bottom,
+								  second.left, second.top, second.right, second.bottom,
+								  intersect.left, intersect.top, intersect.right, intersect.bottom);
+
+	return intersect;
+}
 
 /**
  * Calculate the scrolling position
@@ -343,57 +395,64 @@ render_frame(LinkedList *list,
 static int
 calc_scrolling(int speed, int timer, int bounce, int space)
 {
-    int offset;     // Where in the scrolling cycle we are up to
-    int increments;
-    int directions;
-    if(bounce) {
-        directions = 2;
-    }
-    else {
-        directions = 1;
-    }
-    if (speed > 0) {
-        increments = space * speed;
-        if (((timer / increments) % directions) == 0) {
-            /* wiggle one way */
-            offset = (timer % increments)  / speed;
-        }
-        else {
-            /* wiggle the other */
-            offset = (((timer % increments) - increments + 1) / speed) * -1;
-        }
-    }
-    else if (speed < 0) {
-        increments = space / (speed * -1);
-        if (((timer / increments) % directions) == 0) {
-            offset = (timer % increments) * speed * -1;
-        }
-        else {
-            offset = (((timer % increments) * speed * -1) - space + 1) * -1;
-        }
-    }
-    else {
-        offset = 0;
-    }
-    return offset;
+	int offset;     // Where in the scrolling cycle we are up to
+	int increments;
+	int directions;
+	if(bounce) {
+		directions = 2;
+	}
+	else {
+		directions = 1;
+	}
+	if (speed > 0) {
+		increments = space * speed;
+		if (((timer / increments) % directions) == 0) {
+			/* wiggle one way */
+			offset = (timer % increments)  / speed;
+		}
+		else {
+			/* wiggle the other */
+			offset = (((timer % increments) - increments + 1) / speed) * -1;
+		}
+	}
+	else if (speed < 0) {
+		increments = space / (speed * -1);
+		if (((timer / increments) % directions) == 0) {
+			offset = (timer % increments) * speed * -1;
+		}
+		else {
+			offset = (((timer % increments) * speed * -1) - space + 1) * -1;
+		}
+	}
+	else {
+		offset = 0;
+	}
+	return offset;
 }
 
 
 static void
-render_string(Widget *w, int left, int top, int right, int bottom, int fx, int fy)
+render_string(Widget *w, Coord origin, Dimension dim, Box vis)
 {
-	debug(RPT_DEBUG, "%s(w=%p, left=%d, top=%d, right=%d, bottom=%d, fx=%d, fy=%d)",
-			  __FUNCTION__, w, left, top, right, bottom, fx, fy);
-	int length;
+	debug(RPT_DEBUG, "%s(w=%p, x=%d, y=%d, width=%d, height=%d "
+			  "left=%d, top=%d, right=%d, bottom=%d, string=%s)",
+			  __FUNCTION__, w, origin.x, origin.y, dim.width, dim.height,
+			  vis.left, vis.top, vis.right, vis.bottom, w->text);
+	int length, offset;
 	if (w->text != NULL) {
-	    length = strlen(w->text);
+		if((origin.y + w->y > vis.top) && (origin.y + w->y <= vis.bottom)) {
+			length = strlen(w->text);
+			offset = vis.left - (origin.x + w->x) + 1;
 
-	    if(fx > length) {
-	        fx = length;
-	    }
-	    if((w->y + fy >= top) && (w->y + fy <= bottom)){
-	        drivers_string(w->x + left, w->y + top, w->text + fx);
-	    }
+			if(offset < 0) {
+				offset = 0;
+			}
+			else if(offset > length) {
+				offset = length;
+			}
+
+			drivers_string(origin.x + w->x + offset, origin.y + w->y, w->text + offset);
+		}
 	}
 }
 
@@ -463,8 +522,8 @@ render_pbar(Widget *w, int left, int top, int right, int bottom)
 	if (!((w->x > 0) && (w->y > 0) && (w->width > 0)))
 		return;
 
-        drivers_pbar(w->x + left, w->y + top, w->width, w->promille,
-       		     w->begin_label, w->end_label);
+	drivers_pbar(w->x + left, w->y + top, w->width, w->promille,
+			w->begin_label, w->end_label);
 }
 
 static void
