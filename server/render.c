@@ -62,15 +62,15 @@ char *server_msg_text;
 int server_msg_expire = 0;
 
 #if 1
-static void render_frame(LinkedList *list, Coord origin, Dimension dim, Box vis, char fscroll, int fspeed, long timer);
+static void render_frame(LinkedList *list, Loc origin, Box vis, char fscroll, int fspeed, long timer);
 #else
 static void render_frame(LinkedList *list, int left, int top, int right, int bottom, int fwid, int fhgt, char fscroll, int fspeed, long timer);
 #endif
-static void render_string(Widget *w, Coord origin, Dimension dim, Box vis);
+static void render_string(Widget *w, Loc origin, Box vis);
 static void render_hbar(Widget *w, int left, int top, int right, int bottom, int fy);
 static void render_vbar(Widget *w, int left, int top, int right, int bottom);
 static void render_pbar(Widget *w, int left, int top, int right, int bottom);
-static void render_title(Widget *w, int left, int top, int right, int bottom, long timer);
+static void render_title(Widget *w, Loc origin, Box vis, long timer);
 static void render_scroller(Widget *w, int left, int top, int right, int bottom, long timer);
 static void render_num(Widget *w, int left, int top, int right, int bottom);
 static int calc_scrolling(int speed, int timer, int bounce, int space);
@@ -159,9 +159,9 @@ render_screen(Screen *s, long timer)
 	drivers_output(output_state);
 
 	/* 4. Draw a frame... */
-	render_frame(s->widgetlist, C_ZERO, _DIM(s->width, s->height),
+	render_frame(s->widgetlist, _LOC(0, 0 ,s->width+2, s->height),
 			_BOX(0,0,display_props->width, display_props->height),
-			'v', max(s->duration / s->height, 1), timer);
+			'h', max(s->duration / s->height, 1), timer);
 
 	/* 5. Set the cursor */
 	drivers_cursor(s->cursor_x, s->cursor_y, s->cursor);
@@ -204,8 +204,7 @@ render_screen(Screen *s, long timer)
 /* */
 static void
 render_frame(LinkedList *list,
-		Coord origin,
-		Dimension dim,
+		Loc origin,
 		Box vis,
 #if 0
 		int left,	/* left edge of frame */
@@ -225,34 +224,27 @@ render_frame(LinkedList *list,
 	debug(RPT_DEBUG, "%s(list=%p, x=%d, y=%d, width=%d, height=%d "
 			  "left=%d, top=%d, right=%d, bottom=%d, "
 			  "fscroll='%c', fspeed=%d, timer=%ld)",
-			  __FUNCTION__, list, origin.x, origin.y, dim.width, dim.height,
+			  __FUNCTION__, list, origin.x, origin.y, origin.width, origin.height,
 			  vis.left, vis.top, vis.right, vis.bottom,
 			  fscroll, fspeed, timer);
 
 	/* return on no data or illegal height */
-	if ((list == NULL) || (dim.height <= 0) || (dim.width <= 0))
+	if ((list == NULL) || (origin.height <= 0) || (origin.width <= 0))
 		return;
 
 	if (fscroll == 'v') {		/* vertical scrolling */
 		// only set offset when there is something to scroll
-		if (dim.height > (vis.bottom - vis.top)) {
-			int fy_max = dim.height - (vis.bottom - vis.top) + 1;
+		if (origin.height > (vis.bottom - vis.top)) {
+			int fy_max = origin.height - (vis.bottom - vis.top) + 1;
 			fy = calc_scrolling(fspeed, timer, 1, fy_max);
-#if 0
-			fy = (fspeed > 0)
-			     ? (timer / fspeed) % fy_max
-			     : (-fspeed * timer) % fy_max;
-
-			fy = max(fy, 0);	// safeguard against negative values
-#endif
 			debug(RPT_DEBUG, "%s: fy=%d", __FUNCTION__, fy);
 			origin.y -= fy;
 		}
 	}
 	else if (fscroll == 'h') {	/* horizontal scrolling */
 		// only set offset when there is something to scroll
-		if (dim.width > (vis.right - vis.left)) {
-			int fx_max = dim.width - (vis.right - vis.left) + 1;
+		if (origin.width > (vis.right - vis.left)) {
+			int fx_max = origin.width - (vis.right - vis.left) + 1;
 			fx = calc_scrolling(fspeed, timer, 1, fx_max);
 			debug(RPT_DEBUG, "%s: fx=%d", __FUNCTION__, fx);
 			origin.x -= fx;
@@ -273,7 +265,7 @@ render_frame(LinkedList *list,
 		/* TODO:  Make this cleaner and more flexible! */
 		switch (w->type) {
 		case WID_STRING:
-			render_string(w, origin, dim,vis);
+			render_string(w, origin,vis);
 			break;
 #if 0
 		case WID_HBAR:
@@ -288,18 +280,17 @@ render_frame(LinkedList *list,
 		case WID_ICON:	  /* FIXME:  Icons don't work in frames! */
 			drivers_icon(w->x, w->y, w->length);
 			break;
+#endif
 		case WID_TITLE:	  /* FIXME:  Doesn't work quite right in frames... */
-			render_title(w, left, top, right, bottom, timer);
+			render_title(w, origin,vis, timer);
 			break;
+#if 0
 		case WID_SCROLLER: /* FIXME: doesn't work in frames... */
 			render_scroller(w, left, top, right, bottom, timer);
 			break;
 #endif
 		case WID_FRAME:
 			{
-				/* FIXME: doesn't handle nested frames quite right!
-				 * doesn't handle scrolling in nested frames at all...
-				 */
 				Box visible;
 				visible = calc_intersection(vis, _BOX(origin.x + w->left-1, origin.y + w->top-1, origin.x + w->right, origin.y + w->bottom));
 
@@ -312,7 +303,7 @@ render_frame(LinkedList *list,
 							  w->length, w->speed, timer);
 				}
 				else {
-					render_frame(w->frame_screen->widgetlist, _COORD(origin.x+w->left - 1, origin.y + w->top -1), _DIM(w->width, w->height), visible,
+					render_frame(w->frame_screen->widgetlist, _LOC(origin.x+w->left - 1, origin.y + w->top -1, w->width, w->height), visible,
 							w->length, w->speed, timer);
 				}
 			}
@@ -379,12 +370,13 @@ calc_intersection(Box first, Box second)
 	else {
 		intersect.bottom = first.bottom;
 	}
+#if 0  // Print calculated intersection
 	debug(RPT_DEBUG, "%s((left=%d, top=%d, right=%d, bottom=%d),(left=%d, top=%d, right=%d, bottom=%d),"
 								"(left=%d, top=%d, right=%d, bottom=%d))",
 								  __FUNCTION__,  first.left, first.top, first.right, first.bottom,
 								  second.left, second.top, second.right, second.bottom,
 								  intersect.left, intersect.top, intersect.right, intersect.bottom);
-
+#endif
 	return intersect;
 }
 
@@ -398,14 +390,16 @@ calc_scrolling(int speed, int timer, int bounce, int space)
 	int offset;     // Where in the scrolling cycle we are up to
 	int increments;
 	int directions;
+	int extra = 0;   // Extra delay for both ends of scrolling
 	if(bounce) {
 		directions = 2;
+		extra = 20;
 	}
 	else {
 		directions = 1;
 	}
 	if (speed > 0) {
-		increments = space * speed;
+		increments = (space + extra) * speed;
 		if (((timer / increments) % directions) == 0) {
 			/* wiggle one way */
 			offset = (timer % increments)  / speed;
@@ -416,40 +410,55 @@ calc_scrolling(int speed, int timer, int bounce, int space)
 		}
 	}
 	else if (speed < 0) {
-		increments = space / (speed * -1);
+		increments = (space + extra) / (speed * -1);
 		if (((timer / increments) % directions) == 0) {
 			offset = (timer % increments) * speed * -1;
 		}
 		else {
-			offset = (((timer % increments) * speed * -1) - space + 1) * -1;
+			offset = (((timer % increments) * speed * -1) - (space + extra) + 1) * -1;
 		}
 	}
 	else {
 		offset = 0;
+	}
+	offset -= extra/2;
+	if(offset < 0)
+	{
+		offset = 0;
+	}
+	else if(offset > space)
+	{
+		offset = space;
 	}
 	return offset;
 }
 
 
 static void
-render_string(Widget *w, Coord origin, Dimension dim, Box vis)
+render_string(Widget *w, Loc origin, Box vis)
 {
 	debug(RPT_DEBUG, "%s(w=%p, x=%d, y=%d, width=%d, height=%d "
 			  "left=%d, top=%d, right=%d, bottom=%d, string=%s)",
-			  __FUNCTION__, w, origin.x, origin.y, dim.width, dim.height,
+			  __FUNCTION__, w, origin.x, origin.y, origin.width, origin.height,
 			  vis.left, vis.top, vis.right, vis.bottom, w->text);
 	int length, offset;
 	if (w->text != NULL) {
+		// Check if the widget is on a visible line
 		if((origin.y + w->y > vis.top) && (origin.y + w->y <= vis.bottom)) {
 			length = strlen(w->text);
+			// Calculate the offset of the first visible character
 			offset = vis.left - (origin.x + w->x) + 1;
 
 			if(offset < 0) {
+				// If the offset is less than zero, then the widget is indented from the edge of the frame
 				offset = 0;
 			}
 			else if(offset > length) {
+				// If the offset is greater than the length of the string, then none of the string is visible
 				offset = length;
 			}
+
+			// TODO: Duplicate and truncate the string so that only what will fit is written.
 
 			drivers_string(origin.x + w->x + offset, origin.y + w->y, w->text + offset);
 		}
@@ -527,16 +536,18 @@ render_pbar(Widget *w, int left, int top, int right, int bottom)
 }
 
 static void
-render_title(Widget *w, int left, int top, int right, int bottom, long timer)
+render_title(Widget *w, Loc origin, Box vis, long timer)
 {
-	int vis_width = right - left;
 	char str[BUFSIZE];
-	int x, width = vis_width - 6, length, delay;
+	int x, width = origin.width - 6, length, delay;
+	int offset;
 
-	debug(RPT_DEBUG, "%s(w=%p, left=%d, top=%d, right=%d, bottom=%d, timer=%ld)",
-			  __FUNCTION__, w, left, top, right, bottom, timer);
+	debug(RPT_DEBUG, "%s(w=%p, x=%d, y=%d, width=%d, height=%d "
+			  "left=%d, top=%d, right=%d, bottom=%d, timer=%ld)",
+			  __FUNCTION__, w, origin.x, origin.y, origin.width, origin.height,
+			  vis.left, vis.top, vis.right, vis.bottom, timer);
 
-	if ((w->text == NULL) || (vis_width < 8))
+	if ((w->text == NULL) || (origin.width < 8) || ((origin.y + w->y) < vis.top))
 		return;
 
 	length = strlen(w->text);
@@ -547,45 +558,38 @@ render_title(Widget *w, int left, int top, int right, int bottom, long timer)
 		: max(TITLESPEED_MIN, TITLESPEED_MAX - titlespeed);
 
 	/* display leading fillers */
-	drivers_icon(w->x + left, w->y + top, ICON_BLOCK_FILLED);
-	drivers_icon(w->x + left + 1, w->y + top, ICON_BLOCK_FILLED);
+	if(origin.x + w->x > vis.left){
+		drivers_icon(origin.x + w->x, origin.y + w->y, ICON_BLOCK_FILLED);
+	}
+	if(origin.x + w->x + 1 > vis.left){
+		drivers_icon(origin.x + w->x + 1, origin.y + w->y, ICON_BLOCK_FILLED);
+	}
 
 	length = min(length, sizeof(str)-1);
 	if ((length <= width) || (delay == 0)) {
+		int max;
+		offset = vis.left - (origin.x + w->x + 3) + 1 ;
+		if(offset < 0) {
+			// If the offset is less than zero, then the widget is indented from the edge of the frame
+			offset = 0;
+		}
+		else if(offset > length) {
+			// If the offset is greater than the length of the string, then none of the string is visible
+			offset = length;
+		}
 
-		/* copy test starting from the beginning */
 		length = min(length, width);
-		strncpy(str, w->text, length);
+		strncpy(str, w->text+offset, length);
 		str[length] = '\0';
 
 		/* set x value for trailing fillers */
-		x = length + 4;
+		x = origin.x + w->x + length + 4;
 	}
 	else {			/* Scroll the title, if it doesn't fit... */
 		int offset = timer;
 		int reverse;
 
-		/* if the delay is "too large" increase cycle length */
-		if ((delay != 0) && (delay < length / (length - width)))
-			offset /= delay;
-
-		/* reverse direction every length ticks */
-		reverse = (offset / length) & 1;
-
-		/* restrict offset to cycle length */
-		offset %= length;
-		offset = max(offset, 0);
-
-		/* if the delay is "low enough" slow down as requested */
-		if ((delay != 0) && (delay >= length / (length - width)))
-			offset /= delay;
-
-		/* restrict offset to the max. allowed offset: length - width */
-		offset = min(offset, length - width);
-
-		/* scroll backward by mirroring offset at max. offset */
-		if (reverse)
-			offset = (length - width) - offset;
+		offset = calc_scrolling(delay, timer, 1, length - width);
 
 		/* copy test starting from offset */
 		length = min(width, sizeof(str)-1);
@@ -593,15 +597,15 @@ render_title(Widget *w, int left, int top, int right, int bottom, long timer)
 		str[length] = '\0';
 
 		/* set x value for trailing fillers */
-		x = vis_width - 2;
+		x = origin.x + w->x + length + 4;
 	}
 
 	/* display text */
-	drivers_string(w->x + 3 + left, w->y + top, str);
+	drivers_string(origin.x + w->x + 3 + offset, origin.y + w->y, str);
 
 	/* display trailing fillers */
-	for ( ; x < vis_width; x++) {
-		drivers_icon(w->x + x + left, w->y + top, ICON_BLOCK_FILLED);
+	for ( ; x <= vis.right; x++) {
+		drivers_icon(x, origin.y + w->y, ICON_BLOCK_FILLED);
 	}
 }
 

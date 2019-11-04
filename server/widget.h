@@ -40,20 +40,15 @@ typedef struct Box {
 
 #define _BOX(_l, _t, _r, _b) (Box){.left=_l, .top=_t,  .right=_r, .bottom=_b}
 
-typedef struct Coord {
+typedef struct Loc {
 	int x;
 	int y;
-}Coord;
-
-#define _COORD(_x, _y) (Coord){.x=_x, .y=_y}
-#define C_ZERO (Coord){.x=0, .y=0}
-
-typedef struct Dimention {
 	int width;
 	int height;
-}Dimension;
+}Loc;
 
-#define _DIM(_w, _h) (Dimension){.width = _w, .height=_h}
+#define _LOC(_x, _y, _w, _h) (Loc){.x=_x, .y=_y, .width=_w, .height=_h}
+#define C_ZERO (Coord){.x=0, .y=0}
 
 /** Widget structure */
 typedef struct Widget {
